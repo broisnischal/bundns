@@ -1,0 +1,35 @@
+{
+  "name": "kube",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "dev:dns": "bun --watch src/index.ts",
+    "dev:api": "bun --watch src/api-index.ts",
+    "dev:all": "bun run dev:dns & bun run dev:api",
+    "start": "bun src/index.ts",
+    "start:dns": "bun src/index.ts",
+    "start:api": "bun src/api-index.ts",
+    "start:all": "bun run start:dns & bun run start:api",
+    "build": "bun run build:dns && bun run build:api",
+    "build:dns": "bun build --target=bun --outdir dist/dns ./src/index.ts",
+    "build:api": "bun build --target=bun --outdir dist/api ./src/api-index.ts",
+    "build:prod": "bun run build:dns:prod && bun run build:api:prod",
+    "build:dns:prod": "bun build --target=bun --production --outdir dist/dns ./src/index.ts",
+    "build:api:prod": "bun build --target=bun --production --outdir dist/api ./src/api-index.ts",
+    "compile": "bun run compile:dns && bun run compile:api",
+    "compile:dns": "bun build --compile --target=bun ./src/index.ts --outfile ./bin/dns-server",
+    "compile:api": "bun build --compile --target=bun ./src/api-index.ts --outfile ./bin/api-server",
+    "compile:bytecode": "bun build --compile --bytecode --minify --target=bun ./src/index.ts --outfile ./bin/dns-server"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "up-fetch": "^2.5.1"
+  }
+}

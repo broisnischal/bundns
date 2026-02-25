@@ -1,0 +1,29 @@
+FROM oven/bun:1 AS builder
+WORKDIR /app
+
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
+
+COPY . .
+RUN bun run compile
+
+FROM debian:bookworm-slim AS runtime
+WORKDIR /app
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/bin/dns-server /app/dns-server
+
+RUN mkdir -p /app/data
+
+ENV DNS_HOST=0.0.0.0
+ENV DNS_PORT=5353
+ENV DNS_DB_PATH=/app/data/dns.sqlite
+ENV DNS_CACHE_TTL_SECONDS=5
+
+EXPOSE 5353/udp
+VOLUME ["/app/data"]
+
+CMD ["/app/dns-server"]

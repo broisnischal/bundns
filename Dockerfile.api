@@ -1,0 +1,27 @@
+FROM oven/bun:1 AS builder
+WORKDIR /app
+
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
+
+COPY . .
+RUN bun run compile:api
+
+FROM debian:bookworm-slim AS runtime
+WORKDIR /app
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/bin/api-server /app/api-server
+RUN mkdir -p /app/data
+
+ENV API_HOST=0.0.0.0
+ENV API_PORT=3000
+ENV DNS_DB_PATH=/app/data/dns.sqlite
+
+EXPOSE 3000/tcp
+VOLUME ["/app/data"]
+
+CMD ["/app/api-server"]

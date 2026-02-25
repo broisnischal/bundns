@@ -1,0 +1,34 @@
+services:
+  dns:
+    build:
+      context: .
+      dockerfile: Dockerfile.dns
+    image: bun-dns:local
+    restart: unless-stopped
+    environment:
+      DNS_HOST: 0.0.0.0
+      DNS_PORT: 5353
+      DNS_DB_PATH: /app/data/dns.sqlite
+      DNS_CACHE_TTL_SECONDS: 5
+    ports:
+      - "5353:5353/udp"
+    volumes:
+      - dns_data:/app/data
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: bun-dns-api:local
+    restart: unless-stopped
+    environment:
+      API_HOST: 0.0.0.0
+      API_PORT: 3000
+      DNS_DB_PATH: /app/data/dns.sqlite
+    ports:
+      - "3000:3000"
+    volumes:
+      - dns_data:/app/data
+
+volumes:
+  dns_data:
