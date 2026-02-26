@@ -43,6 +43,15 @@ type DdnsTokenRow = {
   created_at: string;
 };
 type SessionUser = { id: number; email: string };
+type DomainAccessKeyRow = {
+  id: number;
+  user_id: number;
+  domain_id: number;
+  label: string;
+  key_value: string;
+  enabled: number;
+  created_at: string;
+};
 
 const db = openDatabase(DB_PATH);
 
@@ -63,6 +72,9 @@ const touchTokenStmt = db.query<{ changes: number }, [string]>(
 );
 const createDomainStmt = db.query<{ lastInsertRowid: number }, [number, string]>(
   `INSERT INTO domains (user_id, name) VALUES (?1, ?2)`,
+);
+const deleteDomainStmt = db.query<{ changes: number }, [number, number]>(
+  `DELETE FROM domains WHERE id = ?1 AND user_id = ?2`,
 );
 const listDomainsStmt = db.query<DomainRow, [number]>(
   `SELECT id, user_id, name, created_at FROM domains WHERE user_id = ?1 ORDER BY id DESC`,
@@ -175,6 +187,34 @@ const getDdnsTokenForOwnerStmt = db.query<DdnsTokenRow, [number, number]>(
 const deleteDdnsTokenStmt = db.query<{ changes: number }, [number]>(
   `DELETE FROM ddns_tokens WHERE id = ?1`,
 );
+const createDomainAccessKeyStmt = db.query<
+  { lastInsertRowid: number },
+  [number, number, string, string, string]
+>(`
+  INSERT INTO domain_access_keys (user_id, domain_id, label, key_hash, key_value)
+  VALUES (?1, ?2, ?3, ?4, ?5)
+`);
+const listDomainAccessKeysStmt = db.query<DomainAccessKeyRow, [number, number]>(`
+  SELECT id, user_id, domain_id, label, key_value, enabled, created_at
+  FROM domain_access_keys
+  WHERE domain_id = ?1 AND user_id = ?2
+  ORDER BY id DESC
+`);
+const getDomainAccessKeyForOwnerStmt = db.query<DomainAccessKeyRow, [number, number]>(`
+  SELECT id, user_id, domain_id, label, key_value, enabled, created_at
+  FROM domain_access_keys
+  WHERE id = ?1 AND user_id = ?2
+  LIMIT 1
+`);
+const deleteDomainAccessKeyStmt = db.query<{ changes: number }, [number]>(
+  `DELETE FROM domain_access_keys WHERE id = ?1`,
+);
+const getDomainAccessKeyByHashStmt = db.query<DomainAccessKeyRow, [string]>(`
+  SELECT id, user_id, domain_id, label, key_value, enabled, created_at
+  FROM domain_access_keys
+  WHERE key_hash = ?1 AND enabled = 1
+  LIMIT 1
+`);
 const findRecordValueStmt = db.query<{ value: string }, [number, string]>(
   `SELECT value FROM records WHERE domain_id = ?1 AND fqdn = ?2 AND type = 'A' LIMIT 1`,
 );
@@ -395,6 +435,7 @@ function appHtml(state: {
   domains: DomainRow[];
   records: RecordRow[];
   ddnsTokens: DdnsTokenRow[];
+  accessKeys: DomainAccessKeyRow[];
   selectedDomainId: number | null;
 }) {
   const initial = safeJson({
@@ -403,6 +444,7 @@ function appHtml(state: {
     domains: state.domains,
     records: state.records,
     ddnsTokens: state.ddnsTokens,
+    accessKeys: state.accessKeys,
     selectedDomainId: state.selectedDomainId,
   });
 
@@ -414,30 +456,101 @@ function appHtml(state: {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DNS Control Panel</title>
     <style>
-      body { font-family: system-ui, sans-serif; max-width: 920px; margin: 2rem auto; padding: 0 1rem; }
-      .card { border: 1px solid #ddd; border-radius: 12px; padding: 1rem; margin-bottom: 1rem; }
-      input, select, button { padding: .55rem .7rem; margin: .25rem 0; width: 100%; box-sizing: border-box; }
-      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-      pre { background: #111; color: #eee; padding: .7rem; border-radius: 8px; overflow: auto; }
+      :root {
+        --border: #dbe1ea;
+        --text: #0f172a;
+        --muted: #475569;
+        --panel: #ffffff;
+        --bg: #f4f7fb;
+        --primary: #2563eb;
+        --primary-hover: #1d4ed8;
+      }
+      *, *::before, *::after { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
+      body { font-family: Inter, system-ui, sans-serif; min-height: 100vh; }
+      .auth-wrap {
+        max-width: 980px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      .hero {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: linear-gradient(135deg, #ffffff 0%, #eef4ff 100%);
+        padding: 1.2rem;
+        margin-bottom: 1rem;
+      }
+      .hero h1 { margin: 0 0 .3rem; font-size: 1.7rem; }
+      .hero p { margin: 0; color: var(--muted); line-height: 1.45; }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 1rem;
+      }
+      .card {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: var(--panel);
+        padding: 1rem;
+        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+      }
+      .card h2 { margin: 0 0 .2rem; font-size: 1.15rem; }
+      .sub { margin: 0 0 .7rem; color: var(--muted); font-size: .9rem; }
+      .stack { display: grid; gap: .55rem; }
+      label { font-size: .86rem; color: #334155; font-weight: 600; }
+      input, select, button {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        padding: .62rem .72rem;
+        font-size: .95rem;
+        background: #fff;
+        color: var(--text);
+      }
+      input:focus, button:focus {
+        outline: 2px solid #93c5fd;
+        outline-offset: 1px;
+      }
+      button {
+        border-color: var(--primary);
+        background: var(--primary);
+        color: #fff;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      button:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+      .hint { margin-top: .9rem; color: var(--muted); font-size: .83rem; }
     </style>
   </head>
   <body>
-    <h1>DNS Control Panel</h1>
-    <p>Login or register to manage domains and records.</p>
-    <div class="grid">
-      <form class="card" method="post" action="/app/register">
-        <h2>Register</h2>
-        <input name="email" type="email" placeholder="email" required />
-        <input name="password" type="password" placeholder="password (min 8 chars)" required />
-        <button type="submit">Register</button>
-      </form>
-      <form class="card" method="post" action="/app/login">
-        <h2>Login</h2>
-        <input name="email" type="email" placeholder="email" required />
-        <input name="password" type="password" placeholder="password" required />
-        <button type="submit">Login</button>
-      </form>
-    </div>
+    <main class="auth-wrap">
+      <section class="hero">
+        <h1>DNS Control Panel</h1>
+        <p>Manage authoritative DNS zones, records, DDNS tokens, and public CNAME automation from one place.</p>
+      </section>
+      <section class="grid">
+        <form class="card stack" method="post" action="/app/register">
+          <h2>Create account</h2>
+          <p class="sub">New user? Register to onboard domains and start managing records.</p>
+          <label>Email</label>
+          <input name="email" type="email" placeholder="you@example.com" required />
+          <label>Password</label>
+          <input name="password" type="password" placeholder="minimum 8 characters" required />
+          <button type="submit">Register</button>
+          <p class="hint">Tip: use a strong unique password.</p>
+        </form>
+        <form class="card stack" method="post" action="/app/login">
+          <h2>Welcome back</h2>
+          <p class="sub">Login to continue managing your domains and API keys.</p>
+          <label>Email</label>
+          <input name="email" type="email" placeholder="you@example.com" required />
+          <label>Password</label>
+          <input name="password" type="password" placeholder="your password" required />
+          <button type="submit">Login</button>
+          <p class="hint">After login, use the Domain Manager to choose active domain.</p>
+        </form>
+      </section>
+    </main>
   </body>
 </html>`;
   }
@@ -450,16 +563,22 @@ function appHtml(state: {
     <title>DNS Control Panel</title>
     <style>
       :root { --border: #d9d9d9; --muted: #5f6368; --ok: #0a7c25; --err: #b00020; --bg: #ffffff; --text: #1f2937; --panel: #fafafa; }
-      html, body { background: var(--bg); color: var(--text); }
-      body { font-family: Inter, system-ui, sans-serif; max-width: 1220px; margin: 1.2rem auto; padding: 0 1rem; line-height: 1.4; }
+      *, *::before, *::after { box-sizing: border-box; }
+      html, body { background: var(--bg); color: var(--text); width: 100%; overflow-x: hidden; }
+      body { font-family: Inter, system-ui, sans-serif; max-width: none; margin: 0; padding: 1.1rem 2.1rem; line-height: 1.45; }
       .row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
       .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 1rem; }
-      .card { border: 1px solid var(--border); border-radius: 12px; padding: 1rem; background: var(--panel); }
+      .card { border: 1px solid var(--border); border-radius: 12px; padding: 1rem; background: var(--panel); box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
       .subtle { color: var(--muted); font-size: .92rem; margin-top: .25rem; }
       .badge { border: 1px solid var(--border); border-radius: 999px; padding: .2rem .6rem; font-size: .8rem; }
       input, select, button { padding: .58rem .7rem; margin: .2rem 0; width: 100%; box-sizing: border-box; border-radius: 8px; border: 1px solid var(--border); font-size: .95rem; background: #fff; color: var(--text); }
       button { cursor: pointer; background: #2563eb; color: #fff; border-color: #2563eb; }
       button.secondary { background: #fff; color: var(--text); border-color: var(--border); }
+      button:hover { filter: brightness(0.96); }
+      input:focus, select:focus, button:focus {
+        outline: 2px solid #93c5fd;
+        outline-offset: 1px;
+      }
       .stack { display: grid; gap: .55rem; }
       .field { display: grid; gap: .2rem; }
       .field-label { font-size: .88rem; font-weight: 600; color: #374151; }
@@ -470,16 +589,20 @@ function appHtml(state: {
       .check-inline input { width: auto; margin: 0; }
       .preset-row { display: flex; gap: .4rem; flex-wrap: wrap; }
       .preset-row button { width: auto; padding: .35rem .55rem; font-size: .83rem; }
-      table { width: 100%; border-collapse: collapse; }
-      th, td { border-bottom: 1px solid #ececec; text-align: left; padding: .55rem; font-size: .93rem; vertical-align: top; }
+      table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+      th, td { border-bottom: 1px solid #ececec; text-align: left; padding: .55rem; font-size: .93rem; vertical-align: top; overflow-wrap: anywhere; word-break: break-word; }
       th { font-weight: 600; }
+      thead th { background: #f8fafc; }
+      tbody tr:hover { background: #f9fbff; }
       td.actions { width: 150px; }
       .inline-actions { display: flex; gap: .4rem; }
       .inline-actions button { width: auto; margin: 0; padding: .35rem .65rem; }
       pre { background: #f3f4f6; color: #111827; border-radius: 8px; padding: .6rem; overflow: auto; border: 1px solid #e5e7eb; }
       #msg { min-height: 1.2rem; color: var(--ok); font-weight: 500; }
-      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; word-break: break-word; }
       .section-title { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+      .section-actions { display: flex; align-items: center; gap: .45rem; }
+      .section-actions button { width: auto; padding: .35rem .65rem; }
       .modal-backdrop {
         position: fixed;
         inset: 0;
@@ -518,6 +641,7 @@ function appHtml(state: {
         font-size: .92rem;
       }
       @media (max-width: 860px) {
+        body { padding: .9rem 1.1rem; }
         .form-split { grid-template-columns: 1fr; }
       }
     </style>
@@ -539,17 +663,24 @@ function appHtml(state: {
 
     <div class="grid">
       <div class="card">
-        <h3>Create Domain</h3>
+        <h3>Onboard Domain</h3>
         <form id="create-domain-form">
           <input name="domain" placeholder="example.com" required />
-          <button type="submit">Create Domain</button>
+          <button type="submit">Onboard Domain</button>
         </form>
+        <div class="helper">After onboarding, set NS at your registrar to point to your nameservers.</div>
       </div>
 
       <div class="card">
-        <h3>Record Editor</h3>
-        <div class="helper">Open the popup to create or edit records. Routing settings are available in Advanced section.</div>
-        <button id="open-record-modal-btn" type="button">Create Record</button>
+        <h3>Domain Manager</h3>
+        <label class="field">
+          <span class="field-label">Active domain</span>
+          <select id="active-domain-select"></select>
+        </label>
+        <div class="inline-actions">
+          <button type="button" class="secondary" id="sync-domain-select-btn">Use Active Domain</button>
+          <button type="button" class="secondary" id="delete-domain-btn">Delete Domain</button>
+        </div>
       </div>
 
       <div class="card">
@@ -576,8 +707,11 @@ function appHtml(state: {
 
     <div class="card" style="margin-top:1rem">
       <div class="section-title">
-        <h3>Records</h3>
-        <button id="refresh-btn" type="button" class="secondary">Refresh</button>
+        <h3>Records for <span id="records-domain-label" class="mono"></span></h3>
+        <div class="section-actions">
+          <button id="open-record-modal-btn" type="button">Create Record</button>
+          <button id="refresh-btn" type="button" class="secondary">Refresh</button>
+        </div>
       </div>
       <table>
         <thead><tr><th>ID</th><th>FQDN</th><th>TYPE</th><th>TTL</th><th>VALUE</th><th>W</th><th>Geo CIDRs</th><th>Enabled</th><th>Health</th><th>Actions</th></tr></thead>
@@ -592,6 +726,25 @@ function appHtml(state: {
       <table>
         <thead><tr><th>ID</th><th>FQDN</th><th>Token</th><th>TTL</th><th>Created</th><th>Actions</th></tr></thead>
         <tbody id="ddns-body"></tbody>
+      </table>
+    </div>
+
+    <div class="card" style="margin-top:1rem">
+      <div class="section-title">
+        <h3>Public CNAME API Keys</h3>
+      </div>
+      <form id="create-access-key-form" class="stack">
+        <select name="domainId" id="access-key-domain-select"></select>
+        <input name="label" placeholder="label (e.g. customer-portal)" />
+        <button type="submit">Create API Key</button>
+      </form>
+      <div class="helper">External users can call your public CNAME endpoint using this key.</div>
+      <div class="helper mono">POST /api/public/cname/upsert { key, host, target, ttl? }</div>
+      <div class="helper"><a href="/public/cname" target="_blank" rel="noreferrer">Open public CNAME form</a></div>
+      <pre id="access-key-output"></pre>
+      <table>
+        <thead><tr><th>ID</th><th>Label</th><th>Key</th><th>Created</th><th>Actions</th></tr></thead>
+        <tbody id="access-keys-body"></tbody>
       </table>
     </div>
 
@@ -680,12 +833,25 @@ function appHtml(state: {
 function appClientJs() {
   return `import { up } from "https://esm.sh/up-fetch@2.5.1";
 
-const state = window.__APP_STATE__ ?? { user: null, token: "", domains: [], records: [], ddnsTokens: [], selectedDomainId: null };
+const state = window.__APP_STATE__ ?? {
+  user: null,
+  token: "",
+  domains: [],
+  records: [],
+  ddnsTokens: [],
+  accessKeys: [],
+  selectedDomainId: null
+};
 const msg = document.getElementById("msg");
 const recordsBody = document.getElementById("records-body");
 const ddnsBody = document.getElementById("ddns-body");
+const accessKeysBody = document.getElementById("access-keys-body");
+const accessKeyOutput = document.getElementById("access-key-output");
+const recordsDomainLabel = document.getElementById("records-domain-label");
 const domainSelect = document.getElementById("domain-select");
 const ddnsDomainSelect = document.getElementById("ddns-domain-select");
+const activeDomainSelect = document.getElementById("active-domain-select");
+const accessKeyDomainSelect = document.getElementById("access-key-domain-select");
 const tokenOutput = document.getElementById("ddns-token-output");
 const recordForm = document.getElementById("create-record-form");
 const recordSubmitBtn = document.getElementById("record-submit-btn");
@@ -727,6 +893,37 @@ function fillDomainSelect(selectEl) {
     o.textContent = d.name;
     if (state.selectedDomainId && d.id === state.selectedDomainId) o.selected = true;
     selectEl.appendChild(o);
+  }
+}
+
+async function reloadDomains(preferredDomainId = 0) {
+  const data = await upfetch("/api/domains");
+  state.domains = data.domains ?? [];
+  fillDomainSelect(domainSelect);
+  fillDomainSelect(ddnsDomainSelect);
+  fillDomainSelect(activeDomainSelect);
+  fillDomainSelect(accessKeyDomainSelect);
+  const chosen =
+    state.domains.find((d) => d.id === Number(preferredDomainId))?.id ??
+    state.domains[0]?.id ??
+    0;
+  syncDomainSelectors(chosen);
+  return chosen;
+}
+
+function currentDomainId() {
+  return Number(activeDomainSelect?.value || domainSelect?.value || state.selectedDomainId || 0);
+}
+
+function syncDomainSelectors(domainId) {
+  const value = String(domainId || "");
+  if (domainSelect) domainSelect.value = value;
+  if (ddnsDomainSelect) ddnsDomainSelect.value = value;
+  if (activeDomainSelect) activeDomainSelect.value = value;
+  if (accessKeyDomainSelect) accessKeyDomainSelect.value = value;
+  const domain = state.domains.find((d) => d.id === Number(domainId));
+  if (recordsDomainLabel) {
+    recordsDomainLabel.textContent = domain?.name || "(none)";
   }
 }
 
@@ -828,6 +1025,24 @@ function renderDdnsTokens() {
   }
 }
 
+function renderAccessKeys() {
+  if (!accessKeysBody) return;
+  accessKeysBody.innerHTML = "";
+  for (const k of state.accessKeys) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      "<td>" + k.id + "</td>" +
+      "<td>" + (k.label || "default") + "</td>" +
+      "<td class='mono'>" + (k.key_value || "(hidden)") + "</td>" +
+      "<td>" + String(k.created_at || "").replace("T", " ").slice(0, 19) + "</td>" +
+      "<td class='actions'><div class='inline-actions'>" +
+      "<button type='button' data-access-key-action='copy' data-access-key-value='" + encodeURIComponent(k.key_value || "") + "'>Copy</button>" +
+      "<button type='button' data-access-key-action='delete' data-access-key-id='" + k.id + "'>Delete</button>" +
+      "</div></td>";
+    accessKeysBody.appendChild(tr);
+  }
+}
+
 async function reloadRecords(domainId) {
   const data = await upfetch("/api/domains/" + domainId + "/records");
   state.records = data.records ?? [];
@@ -840,9 +1055,16 @@ async function reloadDdnsTokens(domainId) {
   renderDdnsTokens();
 }
 
+async function reloadAccessKeys(domainId) {
+  const data = await upfetch("/api/domains/" + domainId + "/access-keys");
+  state.accessKeys = data.keys ?? [];
+  renderAccessKeys();
+}
+
 async function reloadDomainData(domainId) {
-  await Promise.all([reloadRecords(domainId), reloadDdnsTokens(domainId)]);
+  await Promise.all([reloadRecords(domainId), reloadDdnsTokens(domainId), reloadAccessKeys(domainId)]);
   state.selectedDomainId = domainId;
+  syncDomainSelectors(domainId);
 }
 
 function startRecordEdit(recordId) {
@@ -864,11 +1086,14 @@ function startRecordEdit(recordId) {
 }
 
 async function init() {
-  fillDomainSelect(domainSelect);
-  fillDomainSelect(ddnsDomainSelect);
+  const initialDomainId = await reloadDomains(state.selectedDomainId || 0);
   renderRecords();
   renderDdnsTokens();
+  renderAccessKeys();
   resetRecordForm();
+  if (initialDomainId > 0) {
+    await reloadDomainData(initialDomainId);
+  }
 
   if (domainSelect) {
     domainSelect.addEventListener("change", () => {
@@ -883,9 +1108,107 @@ async function init() {
   if (ddnsDomainSelect) {
     ddnsDomainSelect.addEventListener("change", () => {
       const domainId = Number(ddnsDomainSelect.value);
-      if (domainId > 0 && domainSelect) domainSelect.value = String(domainId);
+      if (domainId > 0) syncDomainSelectors(domainId);
     });
   }
+
+  activeDomainSelect?.addEventListener("change", () => {
+    const domainId = Number(activeDomainSelect.value);
+    if (domainId > 0) {
+      syncDomainSelectors(domainId);
+      reloadDomainData(domainId).catch((e) => setMsg(e.message || "failed to load domain data", true));
+    }
+  });
+
+  accessKeyDomainSelect?.addEventListener("change", () => {
+    const domainId = Number(accessKeyDomainSelect.value);
+    if (domainId > 0) {
+      syncDomainSelectors(domainId);
+      reloadAccessKeys(domainId).catch((e) => setMsg(e.message || "failed to load api keys", true));
+    }
+  });
+
+  document.getElementById("sync-domain-select-btn")?.addEventListener("click", () => {
+    const domainId = currentDomainId();
+    if (domainId > 0) {
+      syncDomainSelectors(domainId);
+      reloadDomainData(domainId).catch((e) => setMsg(e.message || "failed to sync domain", true));
+    }
+  });
+
+  document.getElementById("delete-domain-btn")?.addEventListener("click", async () => {
+    const domainId = currentDomainId();
+    if (domainId <= 0) return;
+    const domain = state.domains.find((d) => d.id === domainId);
+    if (!confirm("Delete domain '" + (domain?.name || domainId) + "' and all related records/tokens?")) return;
+    try {
+      await upfetch("/api/domains/" + domainId, { method: "DELETE" });
+      const next = await reloadDomains();
+      if (next > 0) {
+        await reloadDomainData(next);
+      } else {
+        state.records = [];
+        state.ddnsTokens = [];
+        state.accessKeys = [];
+        renderRecords();
+        renderDdnsTokens();
+        renderAccessKeys();
+        syncDomainSelectors(0);
+      }
+      setMsg("domain deleted");
+    } catch (err) {
+      setMsg(err.message || "failed to delete domain", true);
+    }
+  });
+
+  document.getElementById("create-access-key-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      const form = new FormData(e.currentTarget);
+      const domainId = Number(form.get("domainId") || currentDomainId());
+      const label = String(form.get("label") || "default");
+      const data = await upfetch("/api/domains/" + domainId + "/access-keys", {
+        method: "POST",
+        body: { label },
+      });
+      if (accessKeyOutput) accessKeyOutput.textContent = JSON.stringify(data, null, 2);
+      await reloadAccessKeys(domainId);
+      setMsg("api key created");
+    } catch (err) {
+      setMsg(err.message || "failed to create api key", true);
+    }
+  });
+
+  accessKeysBody?.addEventListener("click", async (e) => {
+    const target = e.target;
+    if (!(target instanceof HTMLElement)) return;
+    const action = target.getAttribute("data-access-key-action");
+    if (!action) return;
+    const keyValue = decodeURIComponent(target.getAttribute("data-access-key-value") || "");
+    if (action === "copy") {
+      if (!keyValue) return setMsg("key value unavailable", true);
+      try {
+        await navigator.clipboard.writeText(keyValue);
+        setMsg("api key copied");
+      } catch {
+        setMsg("clipboard copy failed", true);
+      }
+      return;
+    }
+    if (action === "delete") {
+      const keyId = Number(target.getAttribute("data-access-key-id") || 0);
+      if (keyId <= 0) return;
+      if (!confirm("Delete this API key?")) return;
+      try {
+        await upfetch("/api/domain-access-keys/" + keyId, { method: "DELETE" });
+        const domainId = currentDomainId();
+        if (domainId > 0) await reloadAccessKeys(domainId);
+        setMsg("api key deleted");
+      } catch (err) {
+        setMsg(err.message || "failed to delete api key", true);
+      }
+    }
+  });
 
   document.getElementById("refresh-btn")?.addEventListener("click", () => {
     const id = Number(domainSelect?.value || state.selectedDomainId || 0);
@@ -943,13 +1266,9 @@ async function init() {
     try {
       const form = new FormData(e.currentTarget);
       const data = await upfetch("/api/domains", { method: "POST", body: { domain: String(form.get("domain") || "") } });
-      state.domains.unshift({ id: data.id, name: data.domain, user_id: state.user?.id ?? null, created_at: new Date().toISOString() });
-      fillDomainSelect(domainSelect);
-      fillDomainSelect(ddnsDomainSelect);
-      if (domainSelect) domainSelect.value = String(data.id);
-      if (ddnsDomainSelect) ddnsDomainSelect.value = String(data.id);
+      await reloadDomains(data.id);
       await reloadDomainData(data.id);
-      setMsg("domain created");
+      setMsg("domain onboarded");
     } catch (err) {
       setMsg(err.message || "failed to create domain", true);
     }
@@ -1086,6 +1405,150 @@ updateRecordTypeHint();
 `;
 }
 
+function publicCnameHtml() {
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Public Dynamic CNAME</title>
+    <style>
+      :root {
+        --border: #d9d9d9;
+        --muted: #5f6368;
+        --ok: #0a7c25;
+        --err: #b00020;
+        --bg: #ffffff;
+        --text: #1f2937;
+        --panel: #fafafa;
+      }
+      *, *::before, *::after { box-sizing: border-box; }
+      html, body { background: var(--bg); color: var(--text); }
+      body { font-family: Inter, system-ui, sans-serif; margin: 0; padding: 1.2rem; }
+      .wrap { max-width: 760px; margin: 0 auto; }
+      .card { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); padding: 1rem; }
+      .stack { display: grid; gap: .6rem; }
+      .field { display: grid; gap: .2rem; }
+      .field-label { font-size: .88rem; font-weight: 600; color: #374151; }
+      .helper { color: var(--muted); font-size: .85rem; }
+      input, button {
+        width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: .6rem .72rem;
+        font-size: .95rem;
+        background: #fff;
+        color: var(--text);
+      }
+      button { cursor: pointer; border-color: #2563eb; background: #2563eb; color: #fff; }
+      .check-inline { display: flex; align-items: center; gap: .5rem; font-size: .92rem; }
+      .check-inline input { width: auto; margin: 0; }
+      #result {
+        min-height: 2.2rem;
+        margin-top: .75rem;
+        background: #f3f4f6;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: .65rem;
+        overflow: auto;
+      }
+      .ok { color: var(--ok); }
+      .err { color: var(--err); }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <h1>Public Dynamic CNAME</h1>
+      <p class="helper">Use an access key to create/update a CNAME record without logging in.</p>
+      <div class="card">
+        <form id="public-cname-form" class="stack">
+          <label class="field">
+            <span class="field-label">Access Key</span>
+            <input name="key" placeholder="cname_xxx..." required />
+          </label>
+          <label class="field">
+            <span class="field-label">Host</span>
+            <input name="host" value="@" placeholder="@ or www" />
+          </label>
+          <label class="field">
+            <span class="field-label">Target</span>
+            <input name="target" placeholder="your-app.example.com." required />
+          </label>
+          <label class="field">
+            <span class="field-label">TTL</span>
+            <input name="ttl" type="number" value="300" min="1" max="86400" />
+          </label>
+          <label class="field">
+            <span class="field-label">Weight (optional)</span>
+            <input name="weight" type="number" min="1" max="10000" placeholder="100" />
+          </label>
+          <label class="field">
+            <span class="field-label">Geo CIDRs (optional)</span>
+            <input name="geoCidrs" placeholder="1.2.0.0/16, 2a00::/12" />
+          </label>
+          <label class="field">
+            <span class="field-label">Health Check URL (optional)</span>
+            <input name="healthcheckUrl" placeholder="https://example.com/health" />
+          </label>
+          <label class="check-inline">
+            <input name="enabled" type="checkbox" checked />
+            Record enabled
+          </label>
+          <button type="submit">Create / Upsert CNAME</button>
+        </form>
+        <pre id="result"></pre>
+      </div>
+    </main>
+    <script type="module">
+      const form = document.getElementById("public-cname-form");
+      const result = document.getElementById("result");
+      if (!(form instanceof HTMLFormElement) || !(result instanceof HTMLElement)) {
+        throw new Error("public cname form not available");
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        result.className = "";
+        result.textContent = "Submitting...";
+        try {
+          const data = new FormData(form);
+          const body = {
+            key: String(data.get("key") || "").trim(),
+            host: String(data.get("host") || "@").trim() || "@",
+            target: String(data.get("target") || "").trim(),
+            ttl: Number(data.get("ttl") || 300),
+            enabled: Boolean(data.get("enabled")),
+          };
+          const weight = String(data.get("weight") || "").trim();
+          if (weight) body.weight = Number(weight);
+          const geoCidrs = String(data.get("geoCidrs") || "").trim();
+          if (geoCidrs) body.geoCidrs = geoCidrs;
+          const healthcheckUrl = String(data.get("healthcheckUrl") || "").trim();
+          if (healthcheckUrl) body.healthcheckUrl = healthcheckUrl;
+
+          const res = await fetch("/api/public/cname/upsert", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const payload = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            result.className = "err";
+            result.textContent = JSON.stringify(payload, null, 2);
+            return;
+          }
+          result.className = "ok";
+          result.textContent = JSON.stringify(payload, null, 2);
+        } catch (error) {
+          result.className = "err";
+          result.textContent = error instanceof Error ? error.message : "request failed";
+        }
+      });
+    </script>
+  </body>
+</html>`;
+}
+
 function updateDynamicDns(ddns: DdnsTokenRow, ip: string, userAgent: string) {
   const current = findRecordValueStmt.get(ddns.domain_id, ddns.fqdn);
   deleteRecordsByNameTypeStmt.run(ddns.domain_id, ddns.fqdn, "A");
@@ -1128,6 +1591,12 @@ export function startApiServer() {
       ORDER BY t.id DESC
     `,
   );
+  const appAccessKeysByDomainStmt = db.query<DomainAccessKeyRow, [number, number]>(`
+    SELECT id, user_id, domain_id, label, key_value, enabled, created_at
+    FROM domain_access_keys
+    WHERE domain_id = ?1 AND user_id = ?2
+    ORDER BY id DESC
+  `);
 
   Bun.serve({
     hostname: API_HOST,
@@ -1145,6 +1614,10 @@ export function startApiServer() {
           user && selectedDomainId !== null
             ? appDdnsTokensByDomainStmt.all(selectedDomainId, user.id)
             : [];
+        const accessKeys =
+          user && selectedDomainId !== null
+            ? appAccessKeysByDomainStmt.all(selectedDomainId, user.id)
+            : [];
         return new Response(
           appHtml({
             user,
@@ -1152,6 +1625,7 @@ export function startApiServer() {
             domains,
             records,
             ddnsTokens,
+            accessKeys,
             selectedDomainId,
           }),
           { headers: { "content-type": "text/html; charset=utf-8" } },
@@ -1160,6 +1634,10 @@ export function startApiServer() {
       "/app/client.js": () =>
         new Response(appClientJs(), {
           headers: { "content-type": "application/javascript; charset=utf-8" },
+        }),
+      "/public/cname": () =>
+        new Response(publicCnameHtml(), {
+          headers: { "content-type": "text/html; charset=utf-8" },
         }),
       "/app/register": {
         POST: async (req) => {
@@ -1275,6 +1753,18 @@ export function startApiServer() {
               400,
             );
           }
+        },
+      },
+      "/api/domains/:domainId": {
+        DELETE: async (req) => {
+          const user = await authenticate(req);
+          if (!user) return invalid("unauthorized", 401);
+          const domainId = Number(req.params.domainId);
+          if (!Number.isInteger(domainId) || domainId <= 0) return invalid("invalid domain id");
+          const domain = getDomainStmt.get(domainId, user.id);
+          if (!domain) return invalid("domain not found", 404);
+          deleteDomainStmt.run(domainId, user.id);
+          return json({ ok: true, id: domainId });
         },
       },
 
@@ -1465,6 +1955,104 @@ export function startApiServer() {
             return json({ token, fqdn, ttl }, { status: 201 });
           } catch (error) {
             return invalid(error instanceof Error ? error.message : "failed to create ddns token");
+          }
+        },
+      },
+      "/api/domains/:domainId/access-keys": {
+        GET: async (req) => {
+          const user = await authenticate(req);
+          if (!user) return invalid("unauthorized", 401);
+          const domainId = Number(req.params.domainId);
+          if (!Number.isInteger(domainId) || domainId <= 0) return invalid("invalid domain id");
+          const domain = getDomainStmt.get(domainId, user.id);
+          if (!domain) return invalid("domain not found", 404);
+          return json({ keys: listDomainAccessKeysStmt.all(domainId, user.id) });
+        },
+        POST: async (req) => {
+          const user = await authenticate(req);
+          if (!user) return invalid("unauthorized", 401);
+          const domainId = Number(req.params.domainId);
+          if (!Number.isInteger(domainId) || domainId <= 0) return invalid("invalid domain id");
+          const domain = getDomainStmt.get(domainId, user.id);
+          if (!domain) return invalid("domain not found", 404);
+          const body = await readBody<{ label?: string }>(req);
+          const label = body?.label?.trim() || "default";
+          const key = randomToken("cname");
+          createDomainAccessKeyStmt.run(user.id, domainId, label, tokenHash(key), key);
+          return json({ key, label, domain: domain.name }, { status: 201 });
+        },
+      },
+      "/api/domain-access-keys/:keyId": {
+        DELETE: async (req) => {
+          const user = await authenticate(req);
+          if (!user) return invalid("unauthorized", 401);
+          const keyId = Number(req.params.keyId);
+          if (!Number.isInteger(keyId) || keyId <= 0) return invalid("invalid key id");
+          const key = getDomainAccessKeyForOwnerStmt.get(keyId, user.id);
+          if (!key) return invalid("access key not found", 404);
+          deleteDomainAccessKeyStmt.run(keyId);
+          return json({ ok: true, id: keyId });
+        },
+      },
+      "/api/public/cname/upsert": {
+        POST: async (req) => {
+          const body = await readBody<{
+            key?: string;
+            host?: string;
+            target?: string;
+            ttl?: number;
+            weight?: number;
+            geoCidrs?: string;
+            enabled?: boolean;
+            healthcheckUrl?: string;
+          }>(req);
+          const key = body?.key?.trim();
+          if (!key) return invalid("key is required", 401);
+          const accessKey = getDomainAccessKeyByHashStmt.get(tokenHash(key));
+          if (!accessKey || accessKey.enabled !== 1) return invalid("invalid key", 401);
+          const domain = db
+            .query<DomainRow, [number]>(`SELECT id, user_id, name, created_at FROM domains WHERE id = ?1 LIMIT 1`)
+            .get(accessKey.domain_id);
+          if (!domain) return invalid("domain not found", 404);
+
+          const host = body?.host?.trim() || "@";
+          const target = body?.target?.trim();
+          if (!target) return invalid("target is required");
+          const ttl = Number(body?.ttl ?? 300);
+          if (!Number.isInteger(ttl) || ttl <= 0 || ttl > 86400) return invalid("invalid ttl");
+          try {
+            const fqdn = hostToFqdn(host, domain.name);
+            const cname = normalizeRecordValue("CNAME", target);
+            const routing = normalizeRoutingOptions({
+              weight: body?.weight,
+              geoCidrs: body?.geoCidrs,
+              enabled: body?.enabled,
+              healthcheckUrl: body?.healthcheckUrl,
+            });
+            insertRecordStmt.run(
+              domain.id,
+              fqdn,
+              "CNAME",
+              ttl,
+              cname,
+              routing.weight,
+              routing.geoCidrs,
+              routing.enabled,
+              routing.healthcheckUrl,
+            );
+            return json(
+              {
+                ok: true,
+                domain: domain.name,
+                fqdn,
+                type: "CNAME",
+                value: cname,
+                ttl,
+              },
+              { status: 201 },
+            );
+          } catch (error) {
+            return invalid(error instanceof Error ? error.message : "failed to upsert cname");
           }
         },
       },

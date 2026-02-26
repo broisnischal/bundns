@@ -14,6 +14,7 @@ export function buildOpenApiSpec(serverUrl: string) {
       { name: "Domains" },
       { name: "Records" },
       { name: "Dynamic DNS" },
+      { name: "Public CNAME API" },
     ],
     components: {
       securitySchemes: {
@@ -126,6 +127,26 @@ export function buildOpenApiSpec(serverUrl: string) {
             "201": { description: "Domain created" },
             "400": { description: "Invalid domain" },
             "401": { description: "Unauthorized" },
+          },
+        },
+      },
+      "/api/domains/{domainId}": {
+        delete: {
+          tags: ["Domains"],
+          summary: "Delete a domain and all related resources",
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            {
+              name: "domainId",
+              in: "path",
+              required: true,
+              schema: { type: "integer" },
+            },
+          ],
+          responses: {
+            "200": { description: "Domain deleted" },
+            "401": { description: "Unauthorized" },
+            "404": { description: "Domain not found" },
           },
         },
       },
@@ -332,6 +353,109 @@ export function buildOpenApiSpec(serverUrl: string) {
             "200": { description: "Token deleted" },
             "401": { description: "Unauthorized" },
             "404": { description: "Token not found" },
+          },
+        },
+      },
+      "/api/domains/{domainId}/access-keys": {
+        get: {
+          tags: ["Public CNAME API"],
+          summary: "List public CNAME API keys for a domain",
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            {
+              name: "domainId",
+              in: "path",
+              required: true,
+              schema: { type: "integer" },
+            },
+          ],
+          responses: {
+            "200": { description: "Access key list" },
+            "401": { description: "Unauthorized" },
+            "404": { description: "Domain not found" },
+          },
+        },
+        post: {
+          tags: ["Public CNAME API"],
+          summary: "Create public CNAME API key for a domain",
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            {
+              name: "domainId",
+              in: "path",
+              required: true,
+              schema: { type: "integer" },
+            },
+          ],
+          requestBody: {
+            required: false,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    label: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "201": { description: "Access key created" },
+            "401": { description: "Unauthorized" },
+            "404": { description: "Domain not found" },
+          },
+        },
+      },
+      "/api/domain-access-keys/{keyId}": {
+        delete: {
+          tags: ["Public CNAME API"],
+          summary: "Delete a public CNAME API key",
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            {
+              name: "keyId",
+              in: "path",
+              required: true,
+              schema: { type: "integer" },
+            },
+          ],
+          responses: {
+            "200": { description: "Access key deleted" },
+            "401": { description: "Unauthorized" },
+            "404": { description: "Access key not found" },
+          },
+        },
+      },
+      "/api/public/cname/upsert": {
+        post: {
+          tags: ["Public CNAME API"],
+          summary: "Publicly upsert CNAME using domain access key",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    key: { type: "string" },
+                    host: { type: "string" },
+                    target: { type: "string" },
+                    ttl: { type: "integer", minimum: 1, maximum: 86400 },
+                    weight: { type: "integer", minimum: 1, maximum: 10000 },
+                    geoCidrs: { type: "string" },
+                    enabled: { type: "boolean" },
+                    healthcheckUrl: { type: "string", format: "uri" },
+                  },
+                  required: ["key", "target"],
+                },
+              },
+            },
+          },
+          responses: {
+            "201": { description: "CNAME upserted" },
+            "401": { description: "Invalid key" },
+            "404": { description: "Domain not found" },
           },
         },
       },

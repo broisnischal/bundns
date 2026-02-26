@@ -123,6 +123,21 @@ export function openDatabase(dbPath: string) {
     )
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS domain_access_keys (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      domain_id INTEGER NOT NULL,
+      label TEXT NOT NULL DEFAULT 'default',
+      key_hash TEXT NOT NULL UNIQUE,
+      key_value TEXT NOT NULL DEFAULT '',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+    )
+  `);
+
   migrateLegacyRecordsTableIfNeeded(db);
   migrateRecordColumnsIfNeeded(db);
   migrateDdnsTokensTableIfNeeded(db);
