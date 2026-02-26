@@ -15,7 +15,7 @@ type RecordRow = {
   id: number;
   domain_id: number | null;
   fqdn: string;
-  type: "A" | "AAAA" | "CNAME";
+  type: "A" | "AAAA" | "CNAME" | "NS" | "SOA" | "MX" | "TXT" | "CAA" | "SRV" | "PTR";
   ttl: number;
   value: string;
   created_at: string;
@@ -61,7 +61,7 @@ const insertRecordStmt = db.query<{ lastInsertRowid: number }, [number, string, 
   `
     INSERT INTO records (domain_id, fqdn, type, ttl, value)
     VALUES (?1, ?2, ?3, ?4, ?5)
-    ON CONFLICT (domain_id, fqdn, type)
+    ON CONFLICT (domain_id, fqdn, type, value)
     DO UPDATE SET value = excluded.value, ttl = excluded.ttl, updated_at = CURRENT_TIMESTAMP
   `,
 );
@@ -106,6 +106,9 @@ const findDdnsTokenStmt = db.query<DdnsTokenRow, [string]>(
 );
 const findRecordValueStmt = db.query<{ value: string }, [number, string]>(
   `SELECT value FROM records WHERE domain_id = ?1 AND fqdn = ?2 AND type = 'A' LIMIT 1`,
+);
+const deleteRecordsByNameTypeStmt = db.query<{ changes: number }, [number, string, string]>(
+  `DELETE FROM records WHERE domain_id = ?1 AND fqdn = ?2 AND type = ?3`,
 );
 const insertDdnsUpdateStmt = db.query<{ changes: number }, [number, string, string | null, string, string]>(
   `
@@ -167,6 +170,56 @@ function normalizeRecordValue(type: string, value: string) {
   }
   if (type === "CNAME") {
     return normalizeFqdn(trimmed);
+  }
+  if (type === "NS") {
+    return normalizeFqdn(trimmed);
+  }
+  if (type === "PTR") {
+    return normalizeFqdn(trimmed);
+  }
+  if (type === "SOA") {
+    const parts = trimmed.split(/\s+/);
+    if (parts.length !== 7) throw new Error("SOA must be: mname rname serial refresh retry expire minimum");
+    const numbers = parts.slice(2).map((part) => Number(part));
+    if (numbers.some((n) => !Number.isInteger(n) || n < 0 || n > 0xffffffff)) {
+      throw new Error("Invalid SOA numeric fields");
+    }
+    return `${normalizeFqdn(parts[0])} ${normalizeFqdn(parts[1])} ${numbers.join(" ")}`;
+  }
+  if (type === "MX") {
+    const parts = trimmed.split(/\s+/);
+    if (parts.length !== 2) throw new Error("MX must be: preference exchange");
+    const preference = Number(parts[0]);
+    if (!Number.isInteger(preference) || preference < 0 || preference > 65535) {
+      throw new Error("Invalid MX preference");
+    }
+    return `${preference} ${normalizeFqdn(parts[1])}`;
+  }
+  if (type === "TXT") {
+    if (!trimmed) throw new Error("TXT value cannot be empty");
+    return trimmed;
+  }
+  if (type === "CAA") {
+    const match = trimmed.match(/^(\d+)\s+([a-zA-Z0-9-]+)\s+(.+)$/);
+    if (!match) throw new Error("CAA must be: flags tag value");
+    const flags = Number(match[1]);
+    if (!Number.isInteger(flags) || flags < 0 || flags > 255) {
+      throw new Error("Invalid CAA flags");
+    }
+    return `${flags} ${match[2]} ${match[3]}`;
+  }
+  if (type === "SRV") {
+    const parts = trimmed.split(/\s+/);
+    if (parts.length !== 4) throw new Error("SRV must be: priority weight port target");
+    const [priority, weight, port] = parts.slice(0, 3).map((part) => Number(part));
+    if (
+      [priority, weight, port].some(
+        (v) => !Number.isInteger(v) || v < 0 || v > 65535,
+      )
+    ) {
+      throw new Error("Invalid SRV numeric fields");
+    }
+    return `${priority} ${weight} ${port} ${normalizeFqdn(parts[3])}`;
   }
   throw new Error("Unsupported record type");
 }
@@ -334,6 +387,13 @@ function appHtml(state: {
             <option>A</option>
             <option>AAAA</option>
             <option>CNAME</option>
+            <option>NS</option>
+            <option>SOA</option>
+            <option>MX</option>
+            <option>TXT</option>
+            <option>CAA</option>
+            <option>SRV</option>
+            <option>PTR</option>
           </select>
           <input name="ttl" type="number" value="60" min="1" max="86400" />
           <input name="value" placeholder="1.2.3.4 or target.domain." required />
@@ -524,6 +584,7 @@ init().catch((e) => setMsg(e.message || "failed to init", true));
 
 function updateDynamicDns(ddns: DdnsTokenRow, ip: string, userAgent: string) {
   const current = findRecordValueStmt.get(ddns.domain_id, ddns.fqdn);
+  deleteRecordsByNameTypeStmt.run(ddns.domain_id, ddns.fqdn, "A");
   insertRecordStmt.run(ddns.domain_id, ddns.fqdn, "A", ddns.ttl, ip);
   insertDdnsUpdateStmt.run(ddns.id, ip, current?.value ?? null, ip, userAgent);
   return { previous: current?.value ?? null, changed: current?.value !== ip };
@@ -706,7 +767,7 @@ export function startApiServer() {
 
           const body = await readBody<{
             host?: string;
-            type?: "A" | "AAAA" | "CNAME";
+            type?: "A" | "AAAA" | "CNAME" | "NS" | "SOA" | "MX" | "TXT" | "CAA" | "SRV" | "PTR";
             ttl?: number;
             value?: string;
           }>(req);
@@ -745,7 +806,7 @@ export function startApiServer() {
 
           const body = await readBody<{
             host?: string;
-            type?: "A" | "AAAA" | "CNAME";
+            type?: "A" | "AAAA" | "CNAME" | "NS" | "SOA" | "MX" | "TXT" | "CAA" | "SRV" | "PTR";
             ttl?: number;
             value?: string;
           }>(req);

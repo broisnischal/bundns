@@ -2,6 +2,8 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { Database } from "bun:sqlite";
 
+const SUPPORTED_RECORD_TYPES = ["A", "AAAA", "CNAME", "NS", "SOA", "MX", "TXT", "CAA", "SRV", "PTR"];
+
 export function normalizeFqdn(input: string): string {
   const trimmed = input.trim().toLowerCase();
   if (!trimmed) {
@@ -68,18 +70,21 @@ export function openDatabase(dbPath: string) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       domain_id INTEGER,
       fqdn TEXT NOT NULL,
-      type TEXT NOT NULL CHECK (type IN ('A', 'AAAA', 'CNAME')),
+      type TEXT NOT NULL CHECK (type IN ('${SUPPORTED_RECORD_TYPES.join("', '")}')),
       ttl INTEGER NOT NULL,
       value TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE,
-      UNIQUE (domain_id, fqdn, type)
+      UNIQUE (domain_id, fqdn, type, value)
     )
   `);
 
   db.run(`
     CREATE INDEX IF NOT EXISTS idx_records_fqdn_type ON records (fqdn, type)
+  `);
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_records_domain_fqdn_type ON records (domain_id, fqdn, type)
   `);
 
   db.run(`
@@ -110,8 +115,52 @@ export function openDatabase(dbPath: string) {
     )
   `);
 
+  migrateLegacyRecordsTableIfNeeded(db);
   seedDefaults(db);
   return db;
+}
+
+function migrateLegacyRecordsTableIfNeeded(db: Database) {
+  const tableDef = db
+    .query<{ sql: string }, [string]>(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1`)
+    .get("records");
+  const sql = tableDef?.sql ?? "";
+
+  const hasExtendedTypes = sql.includes("SOA") && sql.includes("NS");
+  const hasExtendedUnique = sql.includes("UNIQUE (domain_id, fqdn, type, value)");
+  if (hasExtendedTypes && hasExtendedUnique) {
+    return;
+  }
+
+  const tx = db.transaction(() => {
+    db.run(`ALTER TABLE records RENAME TO records_old`);
+    db.run(`
+      CREATE TABLE records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        domain_id INTEGER,
+        fqdn TEXT NOT NULL,
+        type TEXT NOT NULL CHECK (type IN ('${SUPPORTED_RECORD_TYPES.join("', '")}')),
+        ttl INTEGER NOT NULL,
+        value TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE,
+        UNIQUE (domain_id, fqdn, type, value)
+      )
+    `);
+    db.run(`
+      INSERT OR IGNORE INTO records (id, domain_id, fqdn, type, ttl, value, created_at, updated_at)
+      SELECT id, domain_id, fqdn, type, ttl, value, created_at, updated_at
+      FROM records_old
+      WHERE type IN ('${SUPPORTED_RECORD_TYPES.join("', '")}')
+    `);
+    db.run(`DROP TABLE records_old`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_records_fqdn_type ON records (fqdn, type)`);
+    db.run(
+      `CREATE INDEX IF NOT EXISTS idx_records_domain_fqdn_type ON records (domain_id, fqdn, type)`,
+    );
+  });
+  tx();
 }
 
 function seedDefaults(db: Database) {
@@ -143,6 +192,33 @@ function seedDefaults(db: Database) {
         VALUES (?1, ?2, ?3, ?4, ?5)
       `,
       [domainId, "api.example.local.", "CNAME", 60, "example.local."],
+    );
+    db.run(
+      `
+        INSERT OR IGNORE INTO records (domain_id, fqdn, type, ttl, value)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+      `,
+      [domainId, "example.local.", "NS", 300, "ns1.example.local."],
+    );
+    db.run(
+      `
+        INSERT OR IGNORE INTO records (domain_id, fqdn, type, ttl, value)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+      `,
+      [domainId, "ns1.example.local.", "A", 300, "127.0.0.1"],
+    );
+    db.run(
+      `
+        INSERT OR IGNORE INTO records (domain_id, fqdn, type, ttl, value)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+      `,
+      [
+        domainId,
+        "example.local.",
+        "SOA",
+        300,
+        "ns1.example.local. hostmaster.example.local. 2026022601 3600 900 1209600 300",
+      ],
     );
   });
   tx();

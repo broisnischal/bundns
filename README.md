@@ -10,6 +10,23 @@ High-performance Bun services backed by `bun:sqlite`:
 
 Both services share one SQLite database file.
 
+## Supported DNS record types
+
+The authoritative DNS server supports:
+
+- `A`, `AAAA`, `CNAME`
+- `NS`, `SOA`, `MX`
+- `TXT`, `CAA`, `SRV`, `PTR`
+
+Record value formats used by the API:
+
+- `NS`, `CNAME`, `PTR`: target FQDN (for example `ns1.example.com.`)
+- `MX`: `<preference> <exchange>` (for example `10 mail.example.com.`)
+- `SOA`: `<mname> <rname> <serial> <refresh> <retry> <expire> <minimum>`
+- `TXT`: plain text payload
+- `CAA`: `<flags> <tag> <value>` (for example `0 issue letsencrypt.org`)
+- `SRV`: `<priority> <weight> <port> <target>`
+
 ## Install
 
 ```bash

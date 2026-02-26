@@ -118,6 +118,172 @@ function ipv6ToBytes(ip: string): Uint8Array {
   return out;
 }
 
+function encodeTxtData(value: string): Uint8Array {
+  const raw = value.replace(/^"(.*)"$/, "$1");
+  const bytes = textEncoder.encode(raw);
+  if (bytes.length === 0) {
+    return Uint8Array.of(0);
+  }
+  const parts: number[] = [];
+  for (let offset = 0; offset < bytes.length; offset += 255) {
+    const len = Math.min(255, bytes.length - offset);
+    parts.push(len);
+    for (let i = 0; i < len; i++) {
+      parts.push(bytes[offset + i]);
+    }
+  }
+  return Uint8Array.from(parts);
+}
+
+function parseTwoPartRdata(value: string, recordType: string): { n1: number; n2: string } {
+  const parts = value.trim().split(/\s+/);
+  if (parts.length !== 2) {
+    throw new Error(`Invalid ${recordType} value`);
+  }
+  const n1 = Number(parts[0]);
+  if (!Number.isInteger(n1) || n1 < 0 || n1 > 65535) {
+    throw new Error(`Invalid ${recordType} preference`);
+  }
+  return { n1, n2: parts[1] };
+}
+
+function parseSoa(value: string) {
+  const parts = value.trim().split(/\s+/);
+  if (parts.length !== 7) {
+    throw new Error("Invalid SOA value");
+  }
+  const nums = parts.slice(2).map((part) => Number(part));
+  if (nums.some((v) => !Number.isInteger(v) || v < 0 || v > 0xffffffff)) {
+    throw new Error("Invalid SOA numeric values");
+  }
+  return {
+    mname: parts[0],
+    rname: parts[1],
+    serial: nums[0],
+    refresh: nums[1],
+    retry: nums[2],
+    expire: nums[3],
+    minimum: nums[4],
+  };
+}
+
+function parseSrv(value: string) {
+  const parts = value.trim().split(/\s+/);
+  if (parts.length !== 4) {
+    throw new Error("Invalid SRV value");
+  }
+  const [priority, weight, port] = parts.slice(0, 3).map((part) => Number(part));
+  if (
+    [priority, weight, port].some(
+      (v) => !Number.isInteger(v) || v < 0 || v > 65535,
+    )
+  ) {
+    throw new Error("Invalid SRV numeric values");
+  }
+  return { priority, weight, port, target: parts[3] };
+}
+
+function parseCaa(value: string) {
+  const match = value.trim().match(/^(\d+)\s+([a-zA-Z0-9-]+)\s+(.+)$/);
+  if (!match) {
+    throw new Error("Invalid CAA value");
+  }
+  const flags = Number(match[1]);
+  const tag = match[2];
+  const caaValue = match[3].replace(/^"(.*)"$/, "$1");
+  if (!Number.isInteger(flags) || flags < 0 || flags > 255) {
+    throw new Error("Invalid CAA flags");
+  }
+  const tagBytes = textEncoder.encode(tag);
+  if (tagBytes.length < 1 || tagBytes.length > 255) {
+    throw new Error("Invalid CAA tag");
+  }
+  return { flags, tagBytes, valueBytes: textEncoder.encode(caaValue) };
+}
+
+function typeToQtype(type: DnsRecord["type"]) {
+  switch (type) {
+    case "A":
+      return QTYPE.A;
+    case "AAAA":
+      return QTYPE.AAAA;
+    case "CNAME":
+      return QTYPE.CNAME;
+    case "NS":
+      return QTYPE.NS;
+    case "SOA":
+      return QTYPE.SOA;
+    case "MX":
+      return QTYPE.MX;
+    case "TXT":
+      return QTYPE.TXT;
+    case "CAA":
+      return QTYPE.CAA;
+    case "SRV":
+      return QTYPE.SRV;
+    case "PTR":
+      return QTYPE.PTR;
+  }
+}
+
+function encodeRdata(record: DnsRecord): Uint8Array {
+  switch (record.type) {
+    case "A":
+      return ipv4ToBytes(record.value);
+    case "AAAA":
+      return ipv6ToBytes(record.value);
+    case "CNAME":
+    case "NS":
+    case "PTR":
+      return encodeName(record.value);
+    case "SOA": {
+      const soa = parseSoa(record.value);
+      const mname = encodeName(soa.mname);
+      const rname = encodeName(soa.rname);
+      const tail = new Uint8Array(20);
+      writeU32(tail, 0, soa.serial);
+      writeU32(tail, 4, soa.refresh);
+      writeU32(tail, 8, soa.retry);
+      writeU32(tail, 12, soa.expire);
+      writeU32(tail, 16, soa.minimum);
+      const out = new Uint8Array(mname.length + rname.length + tail.length);
+      out.set(mname, 0);
+      out.set(rname, mname.length);
+      out.set(tail, mname.length + rname.length);
+      return out;
+    }
+    case "MX": {
+      const { n1: preference, n2: exchange } = parseTwoPartRdata(record.value, "MX");
+      const exchangeBytes = encodeName(exchange);
+      const out = new Uint8Array(2 + exchangeBytes.length);
+      writeU16(out, 0, preference);
+      out.set(exchangeBytes, 2);
+      return out;
+    }
+    case "TXT":
+      return encodeTxtData(record.value);
+    case "CAA": {
+      const caa = parseCaa(record.value);
+      const out = new Uint8Array(2 + caa.tagBytes.length + caa.valueBytes.length);
+      out[0] = caa.flags;
+      out[1] = caa.tagBytes.length;
+      out.set(caa.tagBytes, 2);
+      out.set(caa.valueBytes, 2 + caa.tagBytes.length);
+      return out;
+    }
+    case "SRV": {
+      const srv = parseSrv(record.value);
+      const targetBytes = encodeName(srv.target);
+      const out = new Uint8Array(6 + targetBytes.length);
+      writeU16(out, 0, srv.priority);
+      writeU16(out, 2, srv.weight);
+      writeU16(out, 4, srv.port);
+      out.set(targetBytes, 6);
+      return out;
+    }
+  }
+}
+
 export function parseQuery(query: Uint8Array): QueryContext | null {
   if (query.length < 12) return null;
 
@@ -161,41 +327,54 @@ export function parseQuery(query: Uint8Array): QueryContext | null {
 }
 
 function shouldAnswerForType(qtype: number, record: DnsRecord) {
+  if (qtype === QTYPE.ANY) return true;
   if (qtype === QTYPE.A) return record.type === "A" || record.type === "CNAME";
   if (qtype === QTYPE.AAAA) return record.type === "AAAA" || record.type === "CNAME";
   if (qtype === QTYPE.CNAME) return record.type === "CNAME";
+  if (qtype === QTYPE.NS) return record.type === "NS";
+  if (qtype === QTYPE.SOA) return record.type === "SOA";
+  if (qtype === QTYPE.MX) return record.type === "MX";
+  if (qtype === QTYPE.TXT) return record.type === "TXT";
+  if (qtype === QTYPE.CAA) return record.type === "CAA";
+  if (qtype === QTYPE.SRV) return record.type === "SRV";
+  if (qtype === QTYPE.PTR) return record.type === "PTR";
   return false;
+}
+
+function encodeRecord(ownerName: string, record: DnsRecord): Uint8Array[] {
+  const nameBytes = encodeName(ownerName);
+  const rrHeader = new Uint8Array(10);
+  writeU16(rrHeader, 0, typeToQtype(record.type));
+  writeU16(rrHeader, 2, QCLASS.IN);
+  writeU32(rrHeader, 4, record.ttl);
+  const rdata = encodeRdata(record);
+  writeU16(rrHeader, 8, rdata.length);
+  return [nameBytes, rrHeader, rdata];
 }
 
 export function buildSuccessResponse(
   context: QueryContext,
   records: DnsRecord[],
-  domainExists: boolean,
+  authorityRecords: DnsRecord[],
+  zoneExists: boolean,
+  zoneName: string | null,
 ): Uint8Array {
   const answers = records.filter((record) => shouldAnswerForType(context.qtype, record));
-  const rcode = domainExists ? RCODE.NOERROR : RCODE.NXDOMAIN;
+  const rcode = zoneExists ? RCODE.NOERROR : RCODE.NXDOMAIN;
+  const authority =
+    answers.length === 0
+      ? authorityRecords.filter((record) => record.type === "SOA" || record.type === "NS")
+      : [];
 
   const answerParts: Uint8Array[] = [];
   for (const answer of answers) {
-    const nameBytes = encodeName(context.qname);
-    const rrHeader = new Uint8Array(10);
-    const typeNum =
-      answer.type === "A" ? QTYPE.A : answer.type === "AAAA" ? QTYPE.AAAA : QTYPE.CNAME;
+    answerParts.push(...encodeRecord(context.qname, answer));
+  }
 
-    writeU16(rrHeader, 0, typeNum);
-    writeU16(rrHeader, 2, QCLASS.IN);
-    writeU32(rrHeader, 4, answer.ttl);
-
-    let rdata: Uint8Array;
-    if (answer.type === "A") {
-      rdata = ipv4ToBytes(answer.value);
-    } else if (answer.type === "AAAA") {
-      rdata = ipv6ToBytes(answer.value);
-    } else {
-      rdata = encodeName(answer.value);
-    }
-    writeU16(rrHeader, 8, rdata.length);
-    answerParts.push(nameBytes, rrHeader, rdata);
+  const authorityParts: Uint8Array[] = [];
+  const authorityName = zoneName ?? context.qname;
+  for (const auth of authority) {
+    authorityParts.push(...encodeRecord(authorityName, auth));
   }
 
   const rd = (context.flags >> 8) & 1;
@@ -213,13 +392,14 @@ export function buildSuccessResponse(
   writeU16(header, 2, respFlags);
   writeU16(header, 4, 1);
   writeU16(header, 6, answers.length);
-  writeU16(header, 8, 0);
+  writeU16(header, 8, authority.length);
   writeU16(header, 10, 0);
 
   const totalLength =
     header.length +
     context.questionSection.length +
-    answerParts.reduce((sum, part) => sum + part.length, 0);
+    answerParts.reduce((sum, part) => sum + part.length, 0) +
+    authorityParts.reduce((sum, part) => sum + part.length, 0);
 
   const out = new Uint8Array(totalLength);
   let offset = 0;
@@ -228,6 +408,10 @@ export function buildSuccessResponse(
   out.set(context.questionSection, offset);
   offset += context.questionSection.length;
   for (const part of answerParts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  for (const part of authorityParts) {
     out.set(part, offset);
     offset += part.length;
   }

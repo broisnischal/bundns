@@ -168,7 +168,10 @@ export function buildOpenApiSpec(serverUrl: string) {
                   type: "object",
                   properties: {
                     host: { type: "string", example: "home" },
-                    type: { type: "string", enum: ["A", "AAAA", "CNAME"] },
+                    type: {
+                      type: "string",
+                      enum: ["A", "AAAA", "CNAME", "NS", "SOA", "MX", "TXT", "CAA", "SRV", "PTR"],
+                    },
                     ttl: { type: "integer", minimum: 1, maximum: 86400 },
                     value: { type: "string" },
                   },
@@ -205,7 +208,10 @@ export function buildOpenApiSpec(serverUrl: string) {
                   type: "object",
                   properties: {
                     host: { type: "string" },
-                    type: { type: "string", enum: ["A", "AAAA", "CNAME"] },
+                    type: {
+                      type: "string",
+                      enum: ["A", "AAAA", "CNAME", "NS", "SOA", "MX", "TXT", "CAA", "SRV", "PTR"],
+                    },
                     ttl: { type: "integer", minimum: 1, maximum: 86400 },
                     value: { type: "string" },
                   },

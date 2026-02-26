@@ -5,8 +5,16 @@ export const CACHE_TTL_SECONDS = Number(process.env.DNS_CACHE_TTL_SECONDS ?? 5);
 
 export const QTYPE = {
   A: 1,
+  NS: 2,
   CNAME: 5,
+  SOA: 6,
+  PTR: 12,
+  MX: 15,
+  TXT: 16,
   AAAA: 28,
+  SRV: 33,
+  CAA: 257,
+  ANY: 255,
 } as const;
 
 export const QCLASS = {

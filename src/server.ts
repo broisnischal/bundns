@@ -27,7 +27,13 @@ export function startServer() {
 
         try {
           const lookup = repository.lookup(context.qname);
-          const response = buildSuccessResponse(context, lookup.records, lookup.exists);
+          const response = buildSuccessResponse(
+            context,
+            lookup.records,
+            lookup.authorityRecords,
+            Boolean(lookup.zoneName),
+            lookup.zoneName,
+          );
           socket.send(response, port, address);
         } catch (error) {
           console.error("Response build failed:", error);
