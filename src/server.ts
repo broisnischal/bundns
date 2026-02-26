@@ -1,4 +1,12 @@
-import { HOST, PORT, RCODE, DB_PATH } from "./constants";
+import {
+  HOST,
+  PORT,
+  RCODE,
+  DB_PATH,
+  DNS_RATE_LIMIT_BURST,
+  DNS_RATE_LIMIT_QPS,
+  DNS_RATE_LIMIT_BLOCK_SECONDS,
+} from "./constants";
 import {
   buildErrorResponse,
   buildSuccessResponse,
@@ -9,6 +17,40 @@ import { DnsRepository } from "./repository";
 
 export function startServer() {
   const repository = new DnsRepository(DB_PATH);
+  const limiter = new Map<string, { tokens: number; last: number; blockedUntil: number }>();
+
+  function rateLimitKey(address: string) {
+    return address || "unknown";
+  }
+
+  function isAllowed(address: string) {
+    const key = rateLimitKey(address);
+    const now = Date.now();
+    const state = limiter.get(key) ?? {
+      tokens: Math.max(1, DNS_RATE_LIMIT_BURST),
+      last: now,
+      blockedUntil: 0,
+    };
+    if (now < state.blockedUntil) {
+      limiter.set(key, state);
+      return false;
+    }
+
+    const elapsed = Math.max(0, now - state.last) / 1000;
+    state.tokens = Math.min(
+      Math.max(1, DNS_RATE_LIMIT_BURST),
+      state.tokens + elapsed * Math.max(1, DNS_RATE_LIMIT_QPS),
+    );
+    state.last = now;
+    if (state.tokens < 1) {
+      state.blockedUntil = now + Math.max(1, DNS_RATE_LIMIT_BLOCK_SECONDS) * 1000;
+      limiter.set(key, state);
+      return false;
+    }
+    state.tokens -= 1;
+    limiter.set(key, state);
+    return true;
+  }
 
   const server = Bun.udpSocket({
     hostname: HOST,
@@ -19,6 +61,12 @@ export function startServer() {
         const context = parseQuery(query);
         if (!context) return;
 
+        if (!isAllowed(address)) {
+          const response = buildErrorResponse(context.id, RCODE.REFUSED);
+          socket.send(response, port, address);
+          return;
+        }
+
         if (!isSupportedClass(context.qclass)) {
           const response = buildErrorResponse(context.id, RCODE.NOTIMP);
           socket.send(response, port, address);
@@ -26,7 +74,7 @@ export function startServer() {
         }
 
         try {
-          const lookup = repository.lookup(context.qname);
+          const lookup = repository.lookup(context.qname, context.qtype, address);
           const response = buildSuccessResponse(
             context,
             lookup.records,

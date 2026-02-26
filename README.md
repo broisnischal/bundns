@@ -85,11 +85,24 @@ DNS server:
 - `DNS_HOST` (default `0.0.0.0`)
 - `DNS_PORT` (default `5353`)
 - `DNS_CACHE_TTL_SECONDS` (default `5`, set `0` to disable cache)
+- `DNS_HEALTH_CHECK_INTERVAL_SECONDS` (default `10`, set `0` to disable checks)
+- `DNS_HEALTH_CHECK_TIMEOUT_MS` (default `3000`)
+- `DNS_RATE_LIMIT_QPS` (default `200`)
+- `DNS_RATE_LIMIT_BURST` (default `400`)
+- `DNS_RATE_LIMIT_BLOCK_SECONDS` (default `10`)
+- `DEFAULT_NS_HOST` (default `ns1`, used for onboarding domains)
+- `DEFAULT_NS_IP` (default `127.0.0.1`, A record for default NS host)
 
 API server:
 
 - `API_HOST` (default `0.0.0.0`)
 - `API_PORT` (default `3000`)
+
+UI notes:
+
+- The web panel supports create/edit/delete for records.
+- DDNS token list is visible in the UI. Token values are stored so they can be shown later.
+- Record editor supports weighted routing (`weight`), GeoDNS CIDR targeting (`geoCidrs`), enable/disable, and health-check URL.
 
 ## API quickstart
 

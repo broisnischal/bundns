@@ -174,6 +174,22 @@ export function buildOpenApiSpec(serverUrl: string) {
                     },
                     ttl: { type: "integer", minimum: 1, maximum: 86400 },
                     value: { type: "string" },
+                    weight: {
+                      type: "integer",
+                      minimum: 1,
+                      maximum: 10000,
+                      description: "Weighted routing value (for percent-based traffic split)",
+                    },
+                    geoCidrs: {
+                      type: "string",
+                      description: "Comma-separated CIDR list for GeoDNS selection by resolver/client subnet",
+                    },
+                    enabled: { type: "boolean" },
+                    healthcheckUrl: {
+                      type: "string",
+                      format: "uri",
+                      description: "Optional HTTP/HTTPS health check endpoint",
+                    },
                   },
                   required: ["type", "value"],
                 },
@@ -214,6 +230,10 @@ export function buildOpenApiSpec(serverUrl: string) {
                     },
                     ttl: { type: "integer", minimum: 1, maximum: 86400 },
                     value: { type: "string" },
+                    weight: { type: "integer", minimum: 1, maximum: 10000 },
+                    geoCidrs: { type: "string" },
+                    enabled: { type: "boolean" },
+                    healthcheckUrl: { type: "string", format: "uri" },
                   },
                 },
               },
@@ -245,6 +265,24 @@ export function buildOpenApiSpec(serverUrl: string) {
         },
       },
       "/api/domains/{domainId}/ddns-tokens": {
+        get: {
+          tags: ["Dynamic DNS"],
+          summary: "List DDNS tokens for a domain",
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            {
+              name: "domainId",
+              in: "path",
+              required: true,
+              schema: { type: "integer" },
+            },
+          ],
+          responses: {
+            "200": { description: "DDNS tokens list" },
+            "401": { description: "Unauthorized" },
+            "404": { description: "Domain not found" },
+          },
+        },
         post: {
           tags: ["Dynamic DNS"],
           summary: "Create DDNS token for hostname",
@@ -274,6 +312,26 @@ export function buildOpenApiSpec(serverUrl: string) {
           responses: {
             "201": { description: "DDNS token created" },
             "401": { description: "Unauthorized" },
+          },
+        },
+      },
+      "/api/ddns-tokens/{tokenId}": {
+        delete: {
+          tags: ["Dynamic DNS"],
+          summary: "Delete a DDNS token",
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            {
+              name: "tokenId",
+              in: "path",
+              required: true,
+              schema: { type: "integer" },
+            },
+          ],
+          responses: {
+            "200": { description: "Token deleted" },
+            "401": { description: "Unauthorized" },
+            "404": { description: "Token not found" },
           },
         },
       },

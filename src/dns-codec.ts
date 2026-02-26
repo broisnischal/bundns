@@ -38,11 +38,11 @@ function decodeName(bytes: Uint8Array, start: number): { name: string; next: num
       break;
     }
 
-    if ((len & 0xc0) === 0xc0) {
+    if (len && (len & 0xc0) === 0xc0) {
       if (offset + 1 >= bytes.length) {
         throw new Error("Compression pointer out of range");
       }
-      const ptr = ((len & 0x3f) << 8) | bytes[offset + 1];
+      const ptr = ((len! & 0x3f) << 8) | bytes[offset + 1]!;
       if (!jumped) {
         jumpNext = offset + 2;
         jumped = true;
